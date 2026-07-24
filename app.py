@@ -539,7 +539,7 @@ st.subheader(
 
 rank = 1
 
-for _, row in ideas_df.iterrows():
+for idx, row in ideas_df.iterrows():
 
     title = (
         f"#{rank} | "
@@ -571,8 +571,7 @@ for _, row in ideas_df.iterrows():
             f"Total Debit: ${row['Debit']}"
         )
 
-        st.code(
-f"""
+        ticket = f"""
 BUY {far_exp} {int(row['Lower'])} PUT
 SELL {near_exp} {int(row['Lower'])} PUT
 
@@ -582,7 +581,8 @@ SELL {near_exp} {int(row['ATM'])} PUT
 BUY {far_exp} {int(row['Upper'])} CALL
 SELL {near_exp} {int(row['Upper'])} CALL
 """
-        )
+
+        st.code(ticket)
 
         payoff_chart = build_payoff_chart(
             row["ATM"],
@@ -590,13 +590,23 @@ SELL {near_exp} {int(row['Upper'])} CALL
             row["Debit"]
         )
 
+        payoff_chart.update_layout(
+            title=(
+                f"Payoff "
+                f"{row['Lower']}P-"
+                f"{row['ATM']}P-"
+                f"{row['Upper']}C"
+            )
+        )
+
         st.plotly_chart(
             payoff_chart,
-            use_container_width=True
+            use_container_width=True,
+            key=f"chart_{rank}_{row['ATM']}_{row['Lower']}_{row['Upper']}"
         )
 
     rank += 1
-
+    
 # ====================================
 # TABLE OF ALL SETUPS
 # ====================================
