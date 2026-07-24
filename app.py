@@ -519,9 +519,14 @@ best_chart = build_payoff_chart(
     best["Debit"]
 )
 
+best_chart.update_layout(
+    title=f"Best Setup {best['Lower']}-{best['ATM']}-{best['Upper']}"
+)
+
 st.plotly_chart(
     best_chart,
-    use_container_width=True
+    use_container_width=True,
+    key="best_chart"
 )
 
 # ====================================
