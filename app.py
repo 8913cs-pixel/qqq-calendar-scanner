@@ -2,78 +2,25 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from scipy.stats import norm
-import math
 import plotly.express as px
 
+###################################################
+# PAGE
+###################################################
+
 st.set_page_config(
-    page_title="QQQ Triple Calendar Pro",
+    page_title="QQQ Triple Calendar Scanner",
     layout="wide"
 )
 
-##################################################
+st.title("QQQ Triple Calendar Scanner")
+
+###################################################
 # FUNCTIONS
-##################################################
+###################################################
 
-def black_scholes_greeks(
-    S,
-    K,
-    T,
-    r,
-    sigma,
-    option_type="call"
-):
-
-    if T <= 0 or sigma <= 0:
-        return None
-
-    d1 = (
-        np.log(S / K)
-        + (r + sigma ** 2 / 2) * T
-    ) / (sigma * np.sqrt(T))
-
-    d2 = d1 - sigma * np.sqrt(T)
-
-    if option_type == "call":
-        delta = norm.cdf(d1)
-    else:
-        delta = norm.cdf(d1) - 1
-
-    gamma = (
-        norm.pdf(d1)
-        / (S * sigma * np.sqrt(T))
-    )
-
-    vega = (
-        S
-        * norm.pdf(d1)
-        * np.sqrt(T)
-        / 100
-    )
-
-    theta = (
-        -(
-            S
-            * norm.pdf(d1)
-            * sigma
-        )
-        / (
-            2
-            * np.sqrt(T)
-        )
-    ) / 365
-
-    return {
-        "delta": delta,
-        "gamma": gamma,
-        "vega": vega,
-        "theta": theta
-    }
-
-
-def expected_move(price, iv, dte):
-    return price * iv * np.sqrt(dte / 365)
-
+def round_strike(value, increment):
+    return int(round(value / increment) * increment)
 
 def option_price(df, strike):
 
@@ -82,416 +29,440 @@ def option_price(df, strike):
     if len(row) == 0:
         return None
 
-    return float(row.iloc[0]["lastPrice"])
+    price = float(row.iloc[0]["lastPrice"])
 
+    if np.isnan(price):
+        return None
 
-def option_iv(df, strike):
+    return price
 
-    row = df[df["strike"] == strike]
-
-    if len(row) == 0:
-        return 0.25
-
-    iv = float(row.iloc[0]["impliedVolatility"])
-
-    if np.isnan(iv):
-        return 0.25
-
-    return iv
-
-
-##################################################
-# TITLE
-##################################################
-
-st.title("QQQ Triple Calendar Pro Scanner")
+###################################################
+# LOAD QQQ
+###################################################
 
 ticker = yf.Ticker("QQQ")
 
-##################################################
-# PRICE
-##################################################
-
 hist = ticker.history(period="30d")
 
-price = float(hist["Close"].iloc[-1])
+if hist.empty:
+    st.error("Unable to retrieve QQQ data.")
+    st.stop()
+
+current_price = float(hist["Close"].iloc[-1])
 
 st.metric(
-    "QQQ Current Price",
-    f"${price:.2f}"
+    "QQQ Price",
+    f"${current_price:.2f}"
 )
 
-##################################################
+###################################################
+# SETTINGS
+###################################################
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    strike_increment = st.selectbox(
+        "Strike Increment",
+        [5, 10],
+        index=1
+    )
+
+with col2:
+    cushion = st.number_input(
+        "Cushion",
+        min_value=0,
+        value=0,
+        step=5
+    )
+
+with col3:
+    lookahead_exp = st.slider(
+        "Back Expiration Position",
+        1,
+        8,
+        3
+    )
+
+###################################################
 # EXPIRATIONS
-##################################################
+###################################################
 
 expirations = ticker.options
 
 if len(expirations) < 2:
+    st.error("Not enough expirations found.")
     st.stop()
 
-col1,col2 = st.columns(2)
+front_exp = expirations[0]
 
-with col1:
-    front_exp = st.selectbox(
-        "Front Expiration",
-        expirations,
-        0
-    )
+if lookahead_exp >= len(expirations):
+    lookahead_exp = len(expirations) - 1
 
-with col2:
-    back_exp = st.selectbox(
-        "Back Expiration",
-        expirations,
-        min(3,len(expirations)-1)
-    )
+back_exp = expirations[lookahead_exp]
 
-if front_exp == back_exp:
-    st.warning(
-        "Choose different expirations"
-    )
-    st.stop()
+st.info(
+    f"Front Exp: {front_exp} | Back Exp: {back_exp}"
+)
 
-##################################################
-# CHAINS
-##################################################
+###################################################
+# OPTION CHAINS
+###################################################
 
 front_chain = ticker.option_chain(front_exp)
 back_chain = ticker.option_chain(back_exp)
 
 front_calls = front_chain.calls
-back_calls = back_chain.calls
-
 front_puts = front_chain.puts
+
+back_calls = back_chain.calls
 back_puts = back_chain.puts
 
-##################################################
+###################################################
 # ATM
-##################################################
+###################################################
 
-strikes = front_calls["strike"].tolist()
-
-atm = min(
-    strikes,
-    key=lambda x: abs(x-price)
+atm = round_strike(
+    current_price,
+    strike_increment
 )
 
-st.subheader(
-    f"ATM Strike: {atm}"
-)
+###################################################
+# ATM STRADDLE
+###################################################
 
-wing = st.slider(
-    "Wing Width",
-    5,
-    25,
-    10
-)
-
-lower = atm - wing
-upper = atm + wing
-
-##################################################
-# CALENDAR DEBITS
-##################################################
-
-atm_front = option_price(
+atm_call = option_price(
     front_calls,
     atm
 )
 
-atm_back = option_price(
-    back_calls,
-    atm
-)
-
-put_front = option_price(
+atm_put = option_price(
     front_puts,
-    lower
+    atm
 )
 
-put_back = option_price(
-    back_puts,
-    lower
-)
+if atm_call is None or atm_put is None:
 
-upper_front = option_price(
-    front_calls,
-    upper
-)
-
-upper_back = option_price(
-    back_calls,
-    upper
-)
-
-if None in [
-    atm_front,
-    atm_back,
-    put_front,
-    put_back,
-    upper_front,
-    upper_back
-]:
     st.error(
-        "Could not build strategy"
+        f"Could not locate strike {atm}"
     )
+
     st.stop()
 
-atm_debit = atm_back - atm_front
-put_debit = put_back - put_front
-upper_debit = upper_back - upper_front
+atm_straddle = atm_call + atm_put
 
-total_debit = (
-    atm_debit
-    + put_debit
-    + upper_debit
+###################################################
+# DISTANCE
+###################################################
+
+distance = atm_straddle + cushion
+
+distance = round_strike(
+    distance,
+    strike_increment
 )
 
-##################################################
-# SUMMARY
-##################################################
+###################################################
+# STRIKES
+###################################################
 
-st.subheader("Strategy Summary")
+lower_put = round_strike(
+    atm - distance,
+    strike_increment
+)
 
-summary = pd.DataFrame({
-    "Component":[
-        "ATM Calendar",
-        "Put Calendar",
-        "Call Calendar"
+upper_call = round_strike(
+    atm + distance,
+    strike_increment
+)
+
+###################################################
+# STRUCTURE
+###################################################
+
+st.subheader("Primary Triple Calendar")
+
+structure = pd.DataFrame({
+    "Component": [
+        "Lower Put Calendar",
+        "ATM Put Calendar",
+        "Upper Call Calendar"
     ],
-    "Debit":[
-        round(atm_debit,2),
-        round(put_debit,2),
-        round(upper_debit,2)
+    "Strike": [
+        lower_put,
+        atm,
+        upper_call
     ]
 })
 
 st.dataframe(
-    summary,
+    structure,
     use_container_width=True
 )
 
-st.metric(
-    "Total Debit",
-    f"${total_debit:.2f}"
-)
+###################################################
+# DISPLAY STRADDLE
+###################################################
 
-##################################################
-# IV / EXPECTED MOVE
-##################################################
-
-atm_iv = option_iv(
-    front_calls,
-    atm
-)
-
-em = expected_move(
-    price,
-    atm_iv,
-    30
-)
-
-col1,col2 = st.columns(2)
+col1,col2,col3,col4 = st.columns(4)
 
 with col1:
     st.metric(
-        "ATM IV",
-        f"{atm_iv*100:.2f}%"
+        "ATM Call",
+        f"${atm_call:.2f}"
     )
 
 with col2:
     st.metric(
-        "30-Day Expected Move",
-        f"${em:.2f}"
+        "ATM Put",
+        f"${atm_put:.2f}"
     )
 
-##################################################
-# GREEKS
-##################################################
+with col3:
+    st.metric(
+        "ATM Straddle",
+        f"${atm_straddle:.2f}"
+    )
 
-T = 30/365
-r = 0.04
+with col4:
+    st.metric(
+        "Distance",
+        distance
+    )
 
-greeks = black_scholes_greeks(
-    price,
-    atm,
-    T,
-    r,
-    atm_iv,
-    "call"
+###################################################
+# DEBITS
+###################################################
+
+lower_front_put = option_price(
+    front_puts,
+    lower_put
 )
 
-if greeks:
+lower_back_put = option_price(
+    back_puts,
+    lower_put
+)
 
-    st.subheader("ATM Greeks")
+atm_front_put = option_price(
+    front_puts,
+    atm
+)
 
-    gdf = pd.DataFrame({
-        "Greek":[
-            "Delta",
-            "Gamma",
-            "Vega",
-            "Theta"
+atm_back_put = option_price(
+    back_puts,
+    atm
+)
+
+upper_front_call = option_price(
+    front_calls,
+    upper_call
+)
+
+upper_back_call = option_price(
+    back_calls,
+    upper_call
+)
+
+if all([
+    lower_front_put is not None,
+    lower_back_put is not None,
+    atm_front_put is not None,
+    atm_back_put is not None,
+    upper_front_call is not None,
+    upper_back_call is not None
+]):
+
+    lower_debit = (
+        lower_back_put -
+        lower_front_put
+    )
+
+    atm_debit = (
+        atm_back_put -
+        atm_front_put
+    )
+
+    upper_debit = (
+        upper_back_call -
+        upper_front_call
+    )
+
+    total_debit = (
+        lower_debit +
+        atm_debit +
+        upper_debit
+    )
+
+    summary = pd.DataFrame({
+        "Calendar": [
+            "Lower Put",
+            "ATM Put",
+            "Upper Call"
         ],
-        "Value":[
-            round(greeks["delta"],4),
-            round(greeks["gamma"],4),
-            round(greeks["vega"],4),
-            round(greeks["theta"],4)
+        "Debit": [
+            round(lower_debit,2),
+            round(atm_debit,2),
+            round(upper_debit,2)
         ]
     })
 
+    st.subheader("Debit Summary")
+
     st.dataframe(
-        gdf,
+        summary,
         use_container_width=True
     )
 
-##################################################
-# SCANNER
-##################################################
+    st.metric(
+        "Total Debit",
+        f"${total_debit:.2f}"
+    )
 
-st.subheader(
-    "Top Calendar Opportunities"
-)
+###################################################
+# TRADE LEGS
+###################################################
 
-results = []
+legs = pd.DataFrame({
+    "Action": [
+        "BUY BACK PUT",
+        "SELL FRONT PUT",
 
-for strike in front_calls["strike"]:
+        "BUY BACK PUT",
+        "SELL FRONT PUT",
 
-    front_row = front_calls[
-        front_calls["strike"] == strike
+        "BUY BACK CALL",
+        "SELL FRONT CALL"
+    ],
+    "Strike": [
+        lower_put,
+        lower_put,
+
+        atm,
+        atm,
+
+        upper_call,
+        upper_call
     ]
+})
 
-    back_row = back_calls[
-        back_calls["strike"] == strike
-    ]
-
-    if (
-        len(front_row)==0
-        or len(back_row)==0
-    ):
-        continue
-
-    fp = float(
-        front_row.iloc[0]["lastPrice"]
-    )
-
-    bp = float(
-        back_row.iloc[0]["lastPrice"]
-    )
-
-    iv = float(
-        front_row.iloc[0][
-            "impliedVolatility"
-        ]
-    )
-
-    if np.isnan(iv):
-        iv = 0.20
-
-    debit = bp - fp
-
-    if debit <= 0:
-        continue
-
-    distance = abs(
-        strike-price
-    )
-
-    score = (
-        (iv*100)
-        /
-        (debit+0.01)
-    )
-
-    results.append([
-        strike,
-        round(debit,2),
-        round(iv*100,2),
-        round(distance,2),
-        round(score,2)
-    ])
-
-scanner = pd.DataFrame(
-    results,
-    columns=[
-        "Strike",
-        "Debit",
-        "IV %",
-        "Distance",
-        "Score"
-    ]
-)
-
-scanner = scanner.sort_values(
-    "Score",
-    ascending=False
-)
+st.subheader("Suggested Trade")
 
 st.dataframe(
-    scanner.head(20),
+    legs,
     use_container_width=True
 )
 
-##################################################
-# BEST IDEA
-##################################################
+###################################################
+# ALTERNATIVE SETUPS
+###################################################
 
-best = scanner.iloc[0]
+ideas = []
+
+for center in range(
+    atm - 30,
+    atm + 35,
+    strike_increment
+):
+
+    center = round_strike(
+        center,
+        strike_increment
+    )
+
+    center_call = option_price(
+        front_calls,
+        center
+    )
+
+    center_put = option_price(
+        front_puts,
+        center
+    )
+
+    if (
+        center_call is None
+        or center_put is None
+    ):
+        continue
+
+    center_straddle = (
+        center_call +
+        center_put
+    )
+
+    spacing = round_strike(
+        center_straddle + cushion,
+        strike_increment
+    )
+
+    lower = round_strike(
+        center - spacing,
+        strike_increment
+    )
+
+    upper = round_strike(
+        center + spacing,
+        strike_increment
+    )
+
+    ideas.append([
+        center,
+        spacing,
+        lower,
+        upper
+    ])
+
+ideas_df = pd.DataFrame(
+    ideas,
+    columns=[
+        "ATM",
+        "Spacing",
+        "Put Calendar",
+        "Call Calendar"
+    ]
+)
 
 st.subheader(
-    "Best Trade Candidate"
+    "Additional Triple Calendar Ideas"
 )
 
-st.success(
-    f"""
-    Strike: {best['Strike']}
-    
-    Estimated Debit: ${best['Debit']}
-    
-    Opportunity Score: {best['Score']}
-    """
+st.dataframe(
+    ideas_df,
+    use_container_width=True
 )
 
-##################################################
-# PAYOFF VISUAL
-##################################################
+###################################################
+# PAYOFF ZONE
+###################################################
 
 x = np.linspace(
-    price-50,
-    price+50,
-    150
+    atm - distance * 2,
+    atm + distance * 2,
+    200
 )
 
-payoff = []
+y = []
 
-for p in x:
+for price in x:
 
-    zone_reward = (
-        15
-        -
-        abs(
-            p-float(best["Strike"])
-        )
-        / 3
+    score = (
+        distance -
+        abs(price - atm)
     )
 
-    pnl = (
-        zone_reward
-        - float(best["Debit"])
-    )
+    y.append(score)
 
-    payoff.append(pnl)
-
-chart = pd.DataFrame({
-    "QQQ Price":x,
-    "P/L":payoff
+chart_df = pd.DataFrame({
+    "QQQ Price": x,
+    "Relative Score": y
 })
 
 fig = px.line(
-    chart,
+    chart_df,
     x="QQQ Price",
-    y="P/L",
-    title="Approximate Calendar Profit Zone"
+    y="Relative Score",
+    title="Approximate Triple Calendar Zone"
 )
 
 st.plotly_chart(
@@ -499,41 +470,9 @@ st.plotly_chart(
     use_container_width=True
 )
 
-##################################################
-# CONTRACTS
-##################################################
-
-st.subheader(
-    "Suggested Triple Calendar"
-)
-
-contracts = pd.DataFrame({
-    "Leg":[
-        "Buy Back ATM Call",
-        "Sell Front ATM Call",
-        "Buy Back Lower Put",
-        "Sell Front Lower Put",
-        "Buy Back Upper Call",
-        "Sell Front Upper Call"
-    ],
-    "Strike":[
-        atm,
-        atm,
-        lower,
-        lower,
-        upper,
-        upper
-    ]
-})
-
-st.dataframe(
-    contracts,
-    use_container_width=True
-)
-
-##################################################
-# CHART
-##################################################
+###################################################
+# QQQ CHART
+###################################################
 
 st.subheader("QQQ Price Chart")
 
@@ -548,20 +487,29 @@ st.plotly_chart(
     use_container_width=True
 )
 
-##################################################
+###################################################
 # REFRESH
-##################################################
+###################################################
 
-if st.button("Refresh Data"):
+if st.button("Refresh"):
     st.rerun()
 
 st.info(
-"""
-Educational use only.
+    """
+    Strategy Logic:
 
-Verify pricing, liquidity,
-bid/ask spreads,
-margin requirements,
-and risk before trading.
-"""
+    ATM Straddle = ATM Call + ATM Put
+
+    Distance = ATM Straddle + Cushion
+
+    Triple Calendar:
+
+    Lower Put Calendar
+
+    ATM Put Calendar
+
+    Upper Call Calendar
+
+    All strikes rounded to chosen increment.
+    """
 )
